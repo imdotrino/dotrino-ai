@@ -6,7 +6,8 @@ Hablar con un modelo de IA **con la llave del usuario**. La llamada sale de dond
 usuario (su navegador, su PC) directo al proveedor que él eligió: no pasa por ningún
 servidor de Dotrino y aquí no hay ninguna llave de nadie más.
 
-Sin dependencias e isomórfico (navegador y Node ≥ 20).
+Sin dependencias e isomórfico (navegador y Node ≥ 20). En el wiki:
+[wiki.dotrino.com/desarrollo/pilares](https://wiki.dotrino.com/desarrollo/pilares/).
 
 | Proveedor | `provider` | Familia | Transcribe audio |
 |---|---|---|---|
