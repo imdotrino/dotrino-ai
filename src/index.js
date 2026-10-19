@@ -45,7 +45,7 @@ const DEFAULT_TIMEOUT = 60_000
  * @param {typeof fetch} [opts.fetch]
  * @param {number} [opts.timeoutMs]
  */
-export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT } = {}) {
+export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f, timeoutMs = DEFAULT_TIMEOUT } = {}) {
   const preset = PROVIDERS[provider]
   if (!preset) throw codeError('unknown-provider', `unknown AI provider: ${provider}`)
   const cfg = {
@@ -56,12 +56,15 @@ export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f = gl
     baseUrl: String(baseUrl || preset.baseUrl).replace(/\/+$/, ''),
     transcribeModel: preset.transcribeModel || null,
     timeoutMs,
-    fetch: f,
+    // El `fetch` del navegador exige que `this` sea `window`: guardado en un objeto y llamado
+    // como método lanza «Illegal invocation» (en Node no pasa, por eso no lo ve una prueba de
+    // Node). Se envuelve para llamarlo siempre suelto.
+    fetch: f || ((...args) => globalThis.fetch(...args)),
   }
   if (!cfg.apiKey && !preset.keyless) throw codeError('no-llm-key', `${provider} needs an API key`)
   if (!cfg.baseUrl) throw codeError('no-base-url', `${provider} needs a base URL`)
   if (!cfg.model) throw codeError('no-model', `${provider} needs a model name`)
-  if (typeof cfg.fetch !== 'function') throw codeError('no-fetch', 'no fetch implementation available')
+  if (typeof globalThis.fetch !== 'function' && !f) throw codeError('no-fetch', 'no fetch implementation available')
 
   const family = FAMILIES[cfg.family]
 
