@@ -1,6 +1,6 @@
 {
   "name": "@dotrino/ai",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Hablar con un modelo de IA con la llave del usuario, directo desde su navegador o su PC: OpenAI-compatible (OpenAI, DeepSeek, Groq, OpenRouter, Ollama), Anthropic y Gemini. Ecosistema Dotrino.",
   "license": "MIT",
   "type": "module",
@@ -16,7 +16,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "type-check": "tsc --noEmit -p jsconfig.json"
   },
   "repository": {
     "type": "git",
@@ -30,5 +31,8 @@
     "openai",
     "anthropic",
     "gemini"
-  ]
+  ],
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
 }

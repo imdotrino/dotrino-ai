@@ -17,12 +17,63 @@ import { codeError } from './errors.js'
 
 export { codeError }
 
+/** @typedef {'openai' | 'anthropic' | 'gemini'} Family */
+/**
+ * @typedef {object} Provider
+ * @property {Family} family
+ * @property {string} label
+ * @property {string} baseUrl
+ * @property {string} model
+ * @property {string} [transcribeModel]
+ * @property {boolean} [keyless]
+ * @property {boolean} browser
+ * @property {string} [keyUrl]
+ */
+/** @typedef {'openai' | 'deepseek' | 'groq' | 'openrouter' | 'ollama' | 'anthropic' | 'gemini' | 'custom'} ProviderName */
+/** @typedef {{ role: 'user' | 'assistant', content: string }} Message */
+/**
+ * @typedef {object} AskRequest
+ * @property {string} [system]
+ * @property {string} [prompt]
+ * @property {Message[]} [messages]
+ * @property {number} [temperature]
+ * @property {number} [maxTokens]
+ * @property {'low' | 'medium' | 'high'} [effort]
+ */
+/** @typedef {AskRequest & { schema?: object }} AskJsonRequest */
+/** @typedef {{ system: string, messages: Message[], temperature: number, maxTokens: number, effort?: 'low' | 'medium' | 'high' }} NormalizedRequest */
+/** @typedef {{ language?: string, prompt?: string }} TranscribeOptions */
+/**
+ * @typedef {object} Config
+ * @property {string} provider
+ * @property {Family} family
+ * @property {string} apiKey
+ * @property {string} model
+ * @property {string} baseUrl
+ * @property {string | null} transcribeModel
+ * @property {number} timeoutMs
+ * @property {typeof fetch} fetch
+ */
+/**
+ * @typedef {object} FamilyImpl
+ * @property {(cfg: Config, req: NormalizedRequest, opts: { json: boolean, schema?: object }) => Promise<string>} chat
+ * @property {(cfg: Config, audio: Blob, opts?: TranscribeOptions) => Promise<string>} [transcribe]
+ */
+/**
+ * @typedef {object} AI
+ * @property {Readonly<{ provider: string, label: string, model: string, baseUrl: string, canTranscribe: boolean }>} info
+ * @property {(req: AskRequest) => Promise<string>} ask
+ * @property {(req: AskJsonRequest) => Promise<any>} askJson  JSON leído del modelo: lo comprueba quien llama
+ * @property {(audio: Blob, opts?: TranscribeOptions) => Promise<string>} transcribe
+ */
+
 /**
  * Proveedores conocidos. `model` es el de por defecto (barato y rápido: lo normal es
  * entender una frase, no escribir un ensayo); el usuario puede pasar otro.
  * `browser` dice si el proveedor deja llamar desde una página web (CORS): si es false, se
  * puede usar desde Node pero en el navegador la llamada no sale.
  */
+/** @type {Readonly<Record<ProviderName, Provider>>} */
 export const PROVIDERS = Object.freeze({
   openai: { family: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', transcribeModel: 'whisper-1', browser: true, keyUrl: 'https://platform.openai.com/api-keys' },
   deepseek: { family: 'openai', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', browser: true, keyUrl: 'https://platform.deepseek.com/api_keys' },
@@ -38,16 +89,19 @@ const DEFAULT_TIMEOUT = 60_000
 
 /**
  * @param {object} opts
- * @param {keyof PROVIDERS} opts.provider
+ * @param {ProviderName} opts.provider
  * @param {string} [opts.apiKey]   obligatoria salvo en los proveedores `keyless` (Ollama)
  * @param {string} [opts.model]    el del proveedor si no se pasa
  * @param {string} [opts.baseUrl]  obligatoria en `custom`; en los demás cambia el servidor
  * @param {typeof fetch} [opts.fetch]
  * @param {number} [opts.timeoutMs]
+ * @returns {AI}
  */
-export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f, timeoutMs = DEFAULT_TIMEOUT } = {}) {
+// Sin opciones, `provider` queda undefined y se lanza `unknown-provider` (el cast es solo para eso).
+export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f, timeoutMs = DEFAULT_TIMEOUT } = /** @type {{ provider: ProviderName }} */ ({})) {
   const preset = PROVIDERS[provider]
   if (!preset) throw codeError('unknown-provider', `unknown AI provider: ${provider}`)
+  /** @type {Config} */
   const cfg = {
     provider,
     family: preset.family,
@@ -59,13 +113,14 @@ export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f, tim
     // El `fetch` del navegador exige que `this` sea `window`: guardado en un objeto y llamado
     // como método lanza «Illegal invocation» (en Node no pasa, por eso no lo ve una prueba de
     // Node). Se envuelve para llamarlo siempre suelto.
-    fetch: f || ((...args) => globalThis.fetch(...args)),
+    fetch: f || ((input, init) => globalThis.fetch(input, init)),
   }
   if (!cfg.apiKey && !preset.keyless) throw codeError('no-llm-key', `${provider} needs an API key`)
   if (!cfg.baseUrl) throw codeError('no-base-url', `${provider} needs a base URL`)
   if (!cfg.model) throw codeError('no-model', `${provider} needs a model name`)
   if (typeof globalThis.fetch !== 'function' && !f) throw codeError('no-fetch', 'no fetch implementation available')
 
+  /** @type {FamilyImpl} */
   const family = FAMILIES[cfg.family]
 
   return {
@@ -86,6 +141,8 @@ export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f, tim
      * que devuelve; si no es JSON, lanza `llm-json` con el principio de la respuesta.
      * `schema` (JSON Schema, objetos con `additionalProperties: false`) lo hace cumplir el
      * proveedor donde se puede (Claude, OpenAI); en los demás solo pide JSON.
+     * @param {AskJsonRequest} req
+     * @returns {Promise<any>}
      */
     async askJson (req) {
       const text = await family.chat(cfg, normalize(req), { json: true, schema: req.schema })
@@ -96,7 +153,8 @@ export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f, tim
      * Audio → texto. Solo donde el proveedor lo da (OpenAI, Groq, Gemini); en los demás
      * lanza `no-transcribe`.
      * @param {Blob} audio
-     * @param {{ language?: string, prompt?: string }} [opts]
+     * @param {TranscribeOptions} [opts]
+     * @returns {Promise<string>}
      */
     async transcribe (audio, opts = {}) {
       if (!family.transcribe || (!cfg.transcribeModel && cfg.family !== 'gemini')) {
@@ -107,6 +165,10 @@ export function createAI ({ provider, apiKey = '', model, baseUrl, fetch: f, tim
   }
 }
 
+/**
+ * @param {AskRequest} [req]
+ * @returns {NormalizedRequest}
+ */
 function normalize (req = {}) {
   const messages = req.messages ? [...req.messages] : []
   if (req.prompt) messages.push({ role: 'user', content: String(req.prompt) })
@@ -114,7 +176,11 @@ function normalize (req = {}) {
   return { system: req.system || '', messages, temperature: req.temperature ?? 0.2, maxTokens: req.maxTokens ?? 1024, effort: req.effort }
 }
 
-/** JSON tal cual, o el que viene dentro de un bloque ```json. Si no hay JSON, se dice. */
+/**
+ * JSON tal cual, o el que viene dentro de un bloque ```json. Si no hay JSON, se dice.
+ * @param {unknown} text
+ * @returns {any} lo que dé JSON.parse: la forma la comprueba quien llama
+ */
 export function parseJson (text) {
   const src = String(text || '').trim()
   try {
@@ -130,11 +196,18 @@ export function parseJson (text) {
 
 // ---------- la llamada, con los errores separados por lo que hay que hacer ----------
 
+/**
+ * @param {Config} cfg
+ * @param {string} url
+ * @param {RequestInit} init
+ * @returns {Promise<Response>}
+ */
 async function call (cfg, url, init) {
   let res
   try {
     res = await cfg.fetch(url, { ...init, signal: AbortSignal.timeout(cfg.timeoutMs) })
-  } catch (e) {
+  } catch (err) {
+    const e = /** @type {any} */ (err) // cualquier cosa lanzada por fetch
     if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
       throw codeError('llm-timeout', `${cfg.provider} did not answer within ${cfg.timeoutMs} ms`, { cause: e })
     }
@@ -150,19 +223,27 @@ async function call (cfg, url, init) {
   throw codeError('llm-http', `${cfg.provider} → HTTP ${res.status}: ${body}`, { status: res.status })
 }
 
+/**
+ * @param {Config} cfg
+ * @param {unknown} [why]
+ * @returns {Error}
+ */
 function empty (cfg, why) {
   return codeError('llm-empty', `${cfg.provider} returned an empty answer${why ? ` (${why})` : ''}`)
 }
 
 // ---------- familias ----------
 
+/** @type {FamilyImpl} */
 const openai = {
   async chat (cfg, req, { json, schema }) {
     const messages = req.system ? [{ role: 'system', content: req.system }, ...req.messages] : req.messages
+    /** @type {Record<string, unknown>} */
     const body = { model: cfg.model, messages, temperature: req.temperature, max_tokens: req.maxTokens }
     // El esquema estricto solo lo da OpenAI; los compatibles entienden el modo JSON simple.
     if (json && schema && cfg.provider === 'openai') body.response_format = { type: 'json_schema', json_schema: { name: 'answer', strict: true, schema } }
     else if (json) body.response_format = { type: 'json_object' }
+    /** @type {Record<string, string>} */
     const headers = { 'content-type': 'application/json' }
     if (cfg.apiKey) headers.authorization = `Bearer ${cfg.apiKey}`
     const res = await call(cfg, `${cfg.baseUrl}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) })
@@ -174,10 +255,11 @@ const openai = {
 
   async transcribe (cfg, audio, { language, prompt } = {}) {
     const form = new FormData()
-    form.append('file', audio, audio.name || fileNameFor(audio.type))
-    form.append('model', cfg.transcribeModel)
+    form.append('file', audio, /** @type {File} */ (audio).name || fileNameFor(audio.type))
+    form.append('model', /** @type {string} */ (cfg.transcribeModel))
     if (language) form.append('language', language)
     if (prompt) form.append('prompt', prompt)
+    /** @type {Record<string, string>} */
     const headers = {}
     if (cfg.apiKey) headers.authorization = `Bearer ${cfg.apiKey}`
     const res = await call(cfg, `${cfg.baseUrl}/audio/transcriptions`, { method: 'POST', headers, body: form })
@@ -187,6 +269,7 @@ const openai = {
   },
 }
 
+/** @type {FamilyImpl} */
 const anthropic = {
   async chat (cfg, req, { json, schema }) {
     // Los modelos actuales de Claude rechazan `temperature` (400): no se manda. La salida JSON
@@ -194,8 +277,10 @@ const anthropic = {
     const system = json && !schema ? `${req.system}\n\nAnswer with a single JSON object and nothing else.`.trim() : req.system
     // Con el razonamiento siempre encendido, `max_tokens` incluye lo que piensa: un tope bajo
     // corta la respuesta antes de empezar.
+    /** @type {Record<string, unknown>} */
     const body = { model: cfg.model, max_tokens: Math.max(req.maxTokens, 4096), messages: req.messages }
     if (system) body.system = system
+    /** @type {Record<string, unknown>} */
     const output = {}
     if (schema) output.format = { type: 'json_schema', schema }
     if (req.effort) output.effort = req.effort
@@ -220,14 +305,22 @@ const anthropic = {
     if (data?.stop_reason === 'refusal') {
       throw codeError('llm-refused', `${cfg.provider} declined to answer (${data?.stop_details?.category || 'no category'})`)
     }
-    const text = (data?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('')
+    const text = (data?.content || []).filter((/** @type {any} */ b) => b.type === 'text').map((/** @type {any} */ b) => b.text).join('')
     if (!text) throw empty(cfg, data?.stop_reason)
     return text
   },
 }
 
+/**
+ * @typedef {object} GeminiImpl
+ * @property {FamilyImpl['chat']} chat
+ * @property {NonNullable<FamilyImpl['transcribe']>} transcribe
+ * @property {(cfg: Config, model: string, body: object) => Promise<string>} generate
+ */
+/** @type {GeminiImpl} */
 const gemini = {
   async chat (cfg, req, { json }) {
+    /** @type {{ contents: object[], generationConfig: Record<string, unknown>, systemInstruction?: object }} */
     const body = {
       contents: req.messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
       generationConfig: { temperature: req.temperature, maxOutputTokens: req.maxTokens },
@@ -255,14 +348,19 @@ const gemini = {
     })
     const data = await res.json()
     const cand = data?.candidates?.[0]
-    const text = (cand?.content?.parts || []).map((p) => p.text || '').join('')
+    const text = (cand?.content?.parts || []).map((/** @type {any} */ p) => p.text || '').join('')
     if (!text) throw empty(cfg, cand?.finishReason || data?.promptFeedback?.blockReason)
     return text
   },
 }
 
+/** @type {Record<Family, FamilyImpl>} */
 const FAMILIES = { openai, anthropic, gemini }
 
+/**
+ * @param {string} [mime]
+ * @returns {string}
+ */
 function fileNameFor (mime = '') {
   if (mime.includes('ogg')) return 'audio.ogg'
   if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')) return 'audio.m4a'
@@ -271,6 +369,10 @@ function fileNameFor (mime = '') {
   return 'audio.webm'
 }
 
+/**
+ * @param {Blob} blob
+ * @returns {Promise<string>}
+ */
 async function toBase64 (blob) {
   const bytes = new Uint8Array(await blob.arrayBuffer())
   let bin = ''
